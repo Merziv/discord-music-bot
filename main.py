@@ -21,15 +21,20 @@ playlist_queue = []
 
 ydl_opts = {
     'format': 'bestaudio/best',
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }],
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
     'default_search': 'auto',
-    'socket_timeout': 10,
+    'source_address': '0.0.0.0'
 }
 
+ffmpeg_options = {
+    'options': '-vn'
+}
 
 @bot.command()
 async def play(ctx, *, query):
@@ -45,7 +50,7 @@ async def play(ctx, *, query):
     else:
         voice_client = ctx.voice_client
 
-    if r"playlist?list=" in query:
+    if r"youtube.com/playlist?list=" in query:
         playlist_id = extract_playlist_id(query)
         if not playlist_id:
             await ctx.send("Nieprawidłowy link do playlisty.")
@@ -57,7 +62,7 @@ async def play(ctx, *, query):
             return
 
         if len(playlist_info) > 0:
-            await ctx.send(f"Odtwarzanie playlisty z YouTube: {query} <:notoco:906996516487581697>")
+            await ctx.send(f"Odtwarzanie playlisty: {query} <:notoco:906996516487581697>")
         else:
             await ctx.send("Nie znaleziono utworów w playliście.")
 
@@ -114,23 +119,27 @@ async def play_song(ctx):
     song = playlist_queue.pop(0)
     voice_client = ctx.voice_client
 
-    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-        search_results = ydl.extract_info(f"ytsearch:{song}", download=False)
+    ydl = youtube_dl.YoutubeDL(ydl_opts)
 
-        if 'entries' in search_results:
-            video_info = search_results['entries'][0]
-        else:
-            video_info = search_results
+    if "youtube.com/watch?v=" in song:
+        video_info = ydl.extract_info(song, download=False)
+        video_url = video_info['url']
+        print_url = video_info['webpage_url']
+    else:
+        video_info = ydl.extract_info(f"ytsearch:{song}", download=False)
+
+        if 'entries' in video_info:
+            video_info = video_info['entries'][0]
 
         video_url = video_info['url']
         print_url = video_info['webpage_url']
 
-        await ctx.send(f"Odtwarzanie muzyki z YouTube: {print_url} <:notoco:906996516487581697>\n")
+    await ctx.send(f"Odtwarzanie muzyki: {print_url} <:notoco:906996516487581697>\n")
 
-        source = discord.FFmpegPCMAudio(executable=ffmpeg_path,
-                                        source=video_url)
+    source = discord.FFmpegPCMAudio(executable=ffmpeg_path,
+                                    source=video_url)
 
-        voice_client.play(source, after=lambda _: bot.loop.create_task(next_song(ctx)))
+    voice_client.play(source, after=lambda _: bot.loop.create_task(next_song(ctx)))
 
 
 async def next_song(ctx):
