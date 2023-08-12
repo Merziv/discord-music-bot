@@ -18,9 +18,17 @@ intents = discord.Intents().all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 playlist_queue = []
+tasks_to_cancel = []
+max_retries = 5
+processing_song = False
 
 ydl_opts = {
     'format': 'bestaudio/best',
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }],
     'restrictfilenames': True,
     'noplaylist': True,
     'nocheckcertificate': True,
@@ -36,7 +44,16 @@ ffmpeg_options = {
     'options': '-vn'
 }
 
-@bot.command()
+
+@bot.command(aliases=['playtop', 'ptop', "pt"])
+async def play_top(ctx, *, query):
+    global playlist_queue
+    if r"youtube.com/playlist?list=" not in query:
+        playlist_queue = [query] + playlist_queue
+        await ctx.send(f"Dodano '{query}' na początek kolejki <:notoco:906996516487581697>")
+
+
+@bot.command(aliases=['p'])
 async def play(ctx, *, query):
     print(f"Query: {query}")
 
@@ -50,31 +67,32 @@ async def play(ctx, *, query):
     else:
         voice_client = ctx.voice_client
 
-    if r"youtube.com/playlist?list=" in query:
-        playlist_id = extract_playlist_id(query)
-        if not playlist_id:
-            await ctx.send("Nieprawidłowy link do playlisty.")
-            return
+    async with ctx.typing():
+        if r"youtube.com/playlist?list=" not in query:
+            playlist_queue.append(query)
 
-        playlist_info = get_playlist_info(playlist_id)
-        if not playlist_info:
-            await ctx.send("Nie można pobrać informacji o playliście.")
-            return
-
-        if len(playlist_info) > 0:
-            await ctx.send(f"Odtwarzanie playlisty: {query} <:notoco:906996516487581697>")
         else:
-            await ctx.send("Nie znaleziono utworów w playliście.")
+            playlist_id = extract_playlist_id(query)
+            if not playlist_id:
+                await ctx.send("Nieprawidłowy link do playlisty.")
+                return
 
-        playlist_queue.extend(playlist_info)
+            playlist_info = get_playlist_info(playlist_id)
+            if not playlist_info:
+                await ctx.send("Nie można pobrać informacji o playliście.")
+                return
+
+            if not len(playlist_info) > 0:
+                await ctx.send("Nie znaleziono utworów w playliście.")
+                return
+
+            playlist_queue.extend(playlist_info)
+            await ctx.send(f"Odtwarzanie playlisty: {query} <:notoco:906996516487581697>")
 
         if not voice_client.is_playing():
             await play_song(ctx)
-
-    else:
-        playlist_queue.append(query)
-        if not voice_client.is_playing():
-            await play_song(ctx)
+        else:
+            await ctx.send(f"Dodano '{query}' na koniec kolejki <:notoco:906996516487581697>")
 
 
 def extract_playlist_id(url):
@@ -97,6 +115,8 @@ def get_playlist_info(playlist_id):
                 for item in playlist_items:
                     print(item)
                     title = item['snippet']['title']
+                    if title == ("Deleted video" or "Private video"):
+                        continue
                     url = f"https://www.youtube.com/watch?v={item['snippet']['resourceId']['videoId']}"
                     song = {
                         'title': title,
@@ -110,36 +130,81 @@ def get_playlist_info(playlist_id):
 
 
 async def play_song(ctx):
-    if not playlist_queue:
+    global processing_song
+    global tasks_to_cancel
+
+    if processing_song:
         return
 
     if ctx.voice_client.is_playing():
         return
 
-    song = playlist_queue.pop(0)
-    voice_client = ctx.voice_client
+    if not playlist_queue:
+        return
 
-    ydl = youtube_dl.YoutubeDL(ydl_opts)
+    async with ctx.typing():
+        processing_song = True
+        voice_client = ctx.voice_client
 
-    if "youtube.com/watch?v=" in song:
-        video_info = ydl.extract_info(song, download=False)
-        video_url = video_info['url']
-        print_url = video_info['webpage_url']
-    else:
-        video_info = ydl.extract_info(f"ytsearch:{song}", download=False)
+        song = playlist_queue.pop(0)
+        retries = 0
 
-        if 'entries' in video_info:
-            video_info = video_info['entries'][0]
+        while retries < max_retries:
+            try:
+                ydl = youtube_dl.YoutubeDL(ydl_opts)
 
-        video_url = video_info['url']
-        print_url = video_info['webpage_url']
+                if 'url' in song and "youtube.com/watch?v=" in song['url']:
+                    video_info = ydl.extract_info(song['url'], download=False)
+                elif "youtube.com/watch?v=" in song:
+                    video_info = ydl.extract_info(song, download=False)
+                else:
+                    video_info = ydl.extract_info(f"ytsearch:{song}", download=False)
+                    if 'entries' in video_info:
+                        video_info = video_info['entries'][0]
 
-    await ctx.send(f"Odtwarzanie muzyki: {print_url} <:notoco:906996516487581697>\n")
+                video_url = video_info['url']
+                print_url = video_info['webpage_url']
 
-    source = discord.FFmpegPCMAudio(executable=ffmpeg_path,
-                                    source=video_url)
+                await ctx.send(f"Odtwarzanie muzyki: {print_url} <:notoco:906996516487581697>")
 
-    voice_client.play(source, after=lambda _: bot.loop.create_task(next_song(ctx)))
+                source = discord.FFmpegPCMAudio(executable=ffmpeg_path,
+                                                source=video_url)
+
+                async def after_play(error):
+                    if error:
+                        if "403 Forbidden" in str(error):
+                            print("Błąd 403 Forbidden przy próbie odtwarzania strumienia audio.")
+                        else:
+                            print("Inny błąd podczas odtwarzania strumienia audio:", error)
+                    else:
+                        new_task = bot.loop.create_task(next_song(ctx))
+                        tasks_to_cancel.append(new_task)
+
+                voice_client.play(source, after=after_play)
+
+                break
+
+            except (youtube_dl.utils.ExtractorError, youtube_dl.utils.DownloadError) as e:
+                print(f"Error processing video: {e}")
+                unavailable_reasons = ["Video unavailable", "Private video"]
+                if any(reason in str(e) for reason in unavailable_reasons):
+                    await ctx.send("Ten utwór jest niedostępny. Przechodzę do następnego utworu.")
+                    new_task = bot.loop.create_task(next_song(ctx))
+                    tasks_to_cancel.append(new_task)
+                    processing_song = False
+                    return
+                retries += 1
+                await ctx.send(f"Problemy z utworem, spróbuję jeszcze raz [{retries}/{max_retries}] <:notoco:906996516487581697>")
+                await asyncio.sleep(3)
+
+        if retries >= max_retries:
+            if 'title' in song:
+                song = song['title']
+            await ctx.send(f"Nie udało się odtworzyć: {song}")
+            new_task = bot.loop.create_task(next_song(ctx))
+            tasks_to_cancel.append(new_task)
+
+        processing_song = False
 
 
 async def next_song(ctx):
@@ -147,50 +212,89 @@ async def next_song(ctx):
         voice_client = ctx.voice_client
         await voice_client.disconnect()
         return
-    await asyncio.sleep(1)
     await play_song(ctx)
 
 
-@bot.command()
+@bot.command(aliases=['mix'])
 async def shuffle(ctx):
     if not playlist_queue:
         await ctx.send("Kolejka utworów jest pusta.")
         return
 
     random.shuffle(playlist_queue)
-    await ctx.send("Kolejka utworów została przemieszana.")
+    await ctx.send("Kolejka utworów została przemieszana <:notoco:906996516487581697>")
 
 
-@bot.command()
-async def queue(ctx):
+@bot.command(aliases=['remove', 'rm'])
+async def remove_from_queue(ctx, index):
+    index = int(index)-1
+    if index >= len(playlist_queue):
+        await ctx.send("Nie ma tylu utworów w kolejce <:notoco:906996516487581697>")
+    element = playlist_queue.pop(index)
+    if 'title' in element:
+        element = element['title']
+    await ctx.send(f"Usunąłem {element} z kolejki <:notoco:906996516487581697>")
+
+
+@bot.command(aliases=['q'])
+async def queue(ctx, queue_size=10):
     if not playlist_queue:
         await ctx.send("Kolejka utworów jest pusta.")
         return
 
-    num_tracks = min(len(playlist_queue), 10)
-    track_list = "\n".join([f"{i + 1}. {playlist_queue[i]['title']}" for i in range(num_tracks)])
+    if queue_size > 100:
+        queue_size = 100
+
+    num_tracks = min(len(playlist_queue), queue_size)
+    track_list = []
+
+    for i in range(num_tracks):
+        song = playlist_queue[i]
+        if 'title' in song:
+            track_list.append(f"{i + 1}. {song['title']}")
+        else:
+            track_list.append(f"{i + 1}. {song}")
+
+    track_list = "\n".join(track_list)
 
     await ctx.send(f"Kolejka utworów ({len(playlist_queue)} utworów):\n{track_list}")
 
 
-@bot.command()
+@bot.command(aliases=['next'])
 async def skip(ctx):
     voice_client = ctx.voice_client
 
     if voice_client.is_playing():
         voice_client.stop()
-        await ctx.send("Pominięto bieżący utwór. Przechodzę do następnego...")
-        await asyncio.sleep(3)
-        await next_song(ctx)
+        await ctx.send("Pomijam bieżący utwór. Przechodzę do następnego... <:notoco:906996516487581697>")
     else:
         await ctx.send("Aktualnie nie odtwarzam żadnego utworu.")
+
+    if len(playlist_queue) > 0:
+        await next_song(ctx)
+    else:
+        await ctx.send("Nie mam już nic w kolejce do odtworzenia.")
+
+
+@bot.command()
+async def clear(ctx):
+    global tasks_to_cancel
+    for task in tasks_to_cancel:
+        task.cancel()
+    tasks_to_cancel = []
+    playlist_queue.clear()
+    await ctx.send("Kolejka utworów została wyczyszczona <:notoco:906996516487581697>")
 
 
 @bot.command()
 async def leave(ctx):
+    global tasks_to_cancel
+    for task in tasks_to_cancel:
+        task.cancel()
+    tasks_to_cancel = []
+    playlist_queue.clear()
     voice_channel = ctx.voice_client
-    if voice_channel.is_connected():
-        playlist_queue.clear()
+    if voice_channel and voice_channel.is_connected():
         await voice_channel.disconnect()
 
 
