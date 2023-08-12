@@ -237,9 +237,11 @@ async def queue(ctx, queue_size=10):
     for i in range(num_tracks):
         song = playlist_queue[i]
         if 'title' in song:
-            track_list.append(f"{i + 1}. {song['title']}")
+            masked_title = f"<{song['title']}>"
         else:
-            track_list.append(f"{i + 1}. {song}")
+            masked_title = f"<{song}>"
+
+        track_list.append(f"{i + 1}. {masked_title}")
 
     track_list = "\n".join(track_list)
 
