@@ -18,7 +18,6 @@ intents = discord.Intents().all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 playlist_queue = []
-tasks_to_cancel = []
 max_retries = 5
 processing_song = False
 
@@ -131,7 +130,6 @@ def get_playlist_info(playlist_id):
 
 async def play_song(ctx):
     global processing_song
-    global tasks_to_cancel
 
     if processing_song:
         return
@@ -170,18 +168,7 @@ async def play_song(ctx):
                 source = discord.FFmpegPCMAudio(executable=ffmpeg_path,
                                                 source=video_url)
 
-                async def after_play(error):
-                    if error:
-                        if "403 Forbidden" in str(error):
-                            print("Błąd 403 Forbidden przy próbie odtwarzania strumienia audio.")
-                        else:
-                            print("Inny błąd podczas odtwarzania strumienia audio:", error)
-                    else:
-                        new_task = bot.loop.create_task(next_song(ctx))
-                        tasks_to_cancel.append(new_task)
-
-                voice_client.play(source, after=after_play)
-
+                voice_client.play(source, after=lambda _: bot.loop.create_task(next_song(ctx)))
                 break
 
             except (youtube_dl.utils.ExtractorError, youtube_dl.utils.DownloadError) as e:
@@ -189,20 +176,19 @@ async def play_song(ctx):
                 unavailable_reasons = ["Video unavailable", "Private video"]
                 if any(reason in str(e) for reason in unavailable_reasons):
                     await ctx.send("Ten utwór jest niedostępny. Przechodzę do następnego utworu.")
-                    new_task = bot.loop.create_task(next_song(ctx))
-                    tasks_to_cancel.append(new_task)
+                    bot.loop.create_task(next_song(ctx))
                     processing_song = False
                     return
                 retries += 1
-                await ctx.send(f"Problemy z utworem, spróbuję jeszcze raz [{retries}/{max_retries}] <:notoco:906996516487581697>")
+                await ctx.send(
+                    f"Problemy z utworem, spróbuję jeszcze raz [{retries}/{max_retries}] <:notoco:906996516487581697>")
                 await asyncio.sleep(3)
 
         if retries >= max_retries:
             if 'title' in song:
                 song = song['title']
             await ctx.send(f"Nie udało się odtworzyć: {song}")
-            new_task = bot.loop.create_task(next_song(ctx))
-            tasks_to_cancel.append(new_task)
+            bot.loop.create_task(next_song(ctx))
 
         processing_song = False
 
@@ -227,7 +213,7 @@ async def shuffle(ctx):
 
 @bot.command(aliases=['remove', 'rm'])
 async def remove_from_queue(ctx, index):
-    index = int(index)-1
+    index = int(index) - 1
     if index >= len(playlist_queue):
         await ctx.send("Nie ma tylu utworów w kolejce <:notoco:906996516487581697>")
     element = playlist_queue.pop(index)
@@ -278,20 +264,12 @@ async def skip(ctx):
 
 @bot.command()
 async def clear(ctx):
-    global tasks_to_cancel
-    for task in tasks_to_cancel:
-        task.cancel()
-    tasks_to_cancel = []
     playlist_queue.clear()
     await ctx.send("Kolejka utworów została wyczyszczona <:notoco:906996516487581697>")
 
 
 @bot.command()
 async def leave(ctx):
-    global tasks_to_cancel
-    for task in tasks_to_cancel:
-        task.cancel()
-    tasks_to_cancel = []
     playlist_queue.clear()
     voice_channel = ctx.voice_client
     if voice_channel and voice_channel.is_connected():
