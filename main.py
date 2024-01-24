@@ -28,11 +28,9 @@ ydl_opts = {
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
-    'restrictfilenames': True,
-    'noplaylist': True,
+    'extract_flat': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
-    'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
@@ -40,7 +38,8 @@ ydl_opts = {
 }
 
 ffmpeg_options = {
-    'options': '-vn'
+    'options': '-vn -threads 1',
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -preset ultrafast'
 }
 
 
@@ -112,7 +111,6 @@ def get_playlist_info(playlist_id):
             if playlist_items:
                 playlist_info_list = []
                 for item in playlist_items:
-                    print(item)
                     title = item['snippet']['title']
                     if title == ("Deleted video" or "Private video"):
                         continue
@@ -159,14 +157,17 @@ async def play_song(ctx):
                     video_info = ydl.extract_info(f"ytsearch:{song}", download=False)
                     if 'entries' in video_info:
                         video_info = video_info['entries'][0]
+                    video_info = ydl.extract_info(video_info['url'], download=False)
 
                 video_url = video_info['url']
                 print_url = video_info['webpage_url']
+                title = video_info['title']
 
-                await ctx.send(f"Odtwarzanie muzyki: {print_url} <:notoco:906996516487581697>")
+                await ctx.send(f"Odtwarzanie muzyki:\n{title} <:notoco:906996516487581697>\n{print_url}")
 
                 source = discord.FFmpegPCMAudio(executable=ffmpeg_path,
-                                                source=video_url)
+                                                source=video_url,
+                                                options=ffmpeg_options)
 
                 voice_client.play(source, after=lambda _: bot.loop.create_task(next_song(ctx)))
                 break
@@ -193,11 +194,17 @@ async def play_song(ctx):
         processing_song = False
 
 
+@bot.command()
 async def next_song(ctx):
     if not playlist_queue:
-        voice_client = ctx.voice_client
-        await voice_client.disconnect()
-        return
+        try:
+            await ctx.send("Bot czeka na komendę. Masz 5 minut na wpisanie nowej komendy <:notoco:906996516487581697>")
+            message = await bot.wait_for('message', timeout=300)
+        except asyncio.TimeoutError:
+            await ctx.send("Minął limit czasu. Rozłączam się.")
+            voice_client = ctx.voice_client
+            await voice_client.disconnect()
+            return
     await play_song(ctx)
 
 
