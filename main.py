@@ -46,9 +46,20 @@ ffmpeg_options = {
 @bot.command(aliases=['playtop', 'ptop', "pt"])
 async def play_top(ctx, *, query):
     global playlist_queue
+    voice_channel = ctx.author.voice.channel
+
     if r"youtube.com/playlist?list=" not in query:
+        if ctx.voice_client is None:
+            voice_client = await voice_channel.connect()
+        else:
+            voice_client = ctx.voice_client
+
         playlist_queue = [query] + playlist_queue
-        await ctx.send(f"Dodano '{query}' na początek kolejki <:notoco:906996516487581697>")
+
+        if not voice_client.is_playing():
+            await play_song(ctx)
+        else:
+            await ctx.send(f"Dodano '{query}' na początek kolejki <:notoco:906996516487581697>")
 
 
 @bot.command(aliases=['p'])
@@ -174,7 +185,7 @@ async def play_song(ctx):
 
             except (youtube_dl.utils.ExtractorError, youtube_dl.utils.DownloadError) as e:
                 print(f"Error processing video: {e}")
-                unavailable_reasons = ["Video unavailable", "Private video"]
+                unavailable_reasons = ["Video unavailable", "Private video", "Sign in to confirm your age"]
                 if any(reason in str(e) for reason in unavailable_reasons):
                     await ctx.send("Ten utwór jest niedostępny. Przechodzę do następnego utworu.")
                     bot.loop.create_task(next_song(ctx))
@@ -265,9 +276,7 @@ async def skip(ctx):
     else:
         await ctx.send("Aktualnie nie odtwarzam żadnego utworu.")
 
-    if len(playlist_queue) > 0:
-        await next_song(ctx)
-    else:
+    if not playlist_queue:
         await ctx.send("Nie mam już nic w kolejce do odtworzenia.")
 
 
