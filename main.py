@@ -21,6 +21,8 @@ playlist_queue = []
 max_retries = 5
 processing_song = False
 
+youtube_dl.utils.bug_reports_message = lambda: ''
+
 ydl_opts = {
     'format': 'bestaudio/best',
     'postprocessors': [{
@@ -31,6 +33,7 @@ ydl_opts = {
     'extract_flat': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
+    'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
@@ -38,9 +41,25 @@ ydl_opts = {
 }
 
 ffmpeg_options = {
-    'options': '-vn -threads 1',
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -preset ultrafast'
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn'
 }
+
+
+@bot.command()
+async def pause(ctx):
+    if ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send(f"Zapauzowałem utwór <:notoco:906996516487581697>")
+        await ctx.message.add_reaction('⏯')
+
+
+@bot.command()
+async def resume(ctx):
+    if ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send(f"Wznowiłem utwór <:notoco:906996516487581697>")
+        await ctx.message.add_reaction('⏯')
 
 
 @bot.command(aliases=['playtop', 'ptop', "pt"])
@@ -60,6 +79,7 @@ async def play_top(ctx, *, query):
             await play_song(ctx)
         else:
             await ctx.send(f"Dodano '{query}' na początek kolejki <:notoco:906996516487581697>")
+        await ctx.message.add_reaction('✅')
 
 
 @bot.command(aliases=['p'])
@@ -97,11 +117,13 @@ async def play(ctx, *, query):
 
             playlist_queue.extend(playlist_info)
             await ctx.send(f"Odtwarzanie playlisty: {query} <:notoco:906996516487581697>")
+            await ctx.message.add_reaction('✅')
 
         if not voice_client.is_playing():
             await play_song(ctx)
         else:
             await ctx.send(f"Dodano '{query}' na koniec kolejki <:notoco:906996516487581697>")
+        await ctx.message.add_reaction('✅')
 
 
 def extract_playlist_id(url):
@@ -167,6 +189,11 @@ async def play_song(ctx):
                 else:
                     video_info = ydl.extract_info(f"ytsearch:{song}", download=False)
                     if 'entries' in video_info:
+                        if not len(video_info['entries']):
+                            if len(song) > 16:
+                                song = song[:16] + "..."
+                            await ctx.send(f"Nie znalazłem żadnego wyniku dla {song}")
+                            return
                         video_info = video_info['entries'][0]
                     video_info = ydl.extract_info(video_info['url'], download=False)
 
@@ -174,13 +201,14 @@ async def play_song(ctx):
                 print_url = video_info['webpage_url']
                 title = video_info['title']
 
-                await ctx.send(f"Odtwarzanie muzyki:\n{title} <:notoco:906996516487581697>\n{print_url}")
 
                 source = discord.FFmpegPCMAudio(executable=ffmpeg_path,
                                                 source=video_url,
-                                                options=ffmpeg_options)
+                                                **ffmpeg_options)
 
                 voice_client.play(source, after=lambda _: bot.loop.create_task(next_song(ctx)))
+
+                await ctx.send(f"Odtwarzanie muzyki:\n{title} <:notoco:906996516487581697>\n{print_url}")
                 break
 
             except (youtube_dl.utils.ExtractorError, youtube_dl.utils.DownloadError) as e:
@@ -227,6 +255,7 @@ async def shuffle(ctx):
 
     random.shuffle(playlist_queue)
     await ctx.send("Kolejka utworów została przemieszana <:notoco:906996516487581697>")
+    await ctx.message.add_reaction('✅')
 
 
 @bot.command(aliases=['remove', 'rm'])
@@ -238,12 +267,14 @@ async def remove_from_queue(ctx, index):
     if 'title' in element:
         element = element['title']
     await ctx.send(f"Usunąłem {element} z kolejki <:notoco:906996516487581697>")
+    await ctx.message.add_reaction('✅')
 
 
 @bot.command(aliases=['q'])
 async def queue(ctx, queue_size=10):
     if not playlist_queue:
         await ctx.send("Kolejka utworów jest pusta.")
+        await ctx.message.add_reaction('✅')
         return
 
     if queue_size > 100:
@@ -264,6 +295,7 @@ async def queue(ctx, queue_size=10):
     track_list = "\n".join(track_list)
 
     await ctx.send(f"Kolejka utworów ({len(playlist_queue)} utworów):\n{track_list}")
+    await ctx.message.add_reaction('✅')
 
 
 @bot.command(aliases=['next'])
@@ -273,6 +305,7 @@ async def skip(ctx):
     if voice_client.is_playing():
         voice_client.stop()
         await ctx.send("Pomijam bieżący utwór. Przechodzę do następnego... <:notoco:906996516487581697>")
+        await ctx.message.add_reaction('⏭')
     else:
         await ctx.send("Aktualnie nie odtwarzam żadnego utworu.")
 
@@ -284,6 +317,7 @@ async def skip(ctx):
 async def clear(ctx):
     playlist_queue.clear()
     await ctx.send("Kolejka utworów została wyczyszczona <:notoco:906996516487581697>")
+    await ctx.message.add_reaction('✅')
 
 
 @bot.command()
@@ -292,6 +326,12 @@ async def leave(ctx):
     voice_channel = ctx.voice_client
     if voice_channel and voice_channel.is_connected():
         await voice_channel.disconnect()
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        await ctx.send(f"Nieznana komenda: {bot.command_prefix}{ctx.invoked_with}.")
 
 
 @bot.event
